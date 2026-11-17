@@ -1,0 +1,538 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ready queue</title>
+<link rel="icon" id="favicon">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #faf8f5; --fg: #26231f; --muted: #8a847b; --card: #ffffff; --border: #ebe6df;
+    --green: #2f9e6a; --green-soft: #e3f4ea; --amber: #b7791f; --radius: 18px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #151413; --fg: #f1eee9; --muted: #8f8a83; --card: #1f1e1c; --border: #2f2d2a; --green: #3fb67c; --green-soft: #1d3428; --amber: #e0a446; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.4 ui-sans-serif, system-ui, -apple-system, sans-serif; }
+  .wrap { max-width: 580px; min-height: 100dvh; margin: 0 auto; padding: 40px 16px 24px; display: flex; flex-direction: column; gap: 10px; }
+  #queue { flex: 1; display: flex; flex-direction: column; gap: 10px; }
+  .later { margin-top: auto; padding-top: 24px; display: flex; flex-direction: column; gap: 8px; }
+  .hello { text-align: center; padding-bottom: 14px; }
+  .hello .big { font-size: 26px; font-weight: 650; letter-spacing: -0.01em; }
+  .hello .sub { color: var(--muted); margin-top: 4px; }
+  .later-warn { text-align: center; font-size: 12px; margin: 0 6px; font-weight: 400; color: var(--amber); }
+  .section { font-size: 12px; font-weight: 600; color: var(--muted); margin: 12px 6px 2px; }
+
+  [hidden] { display: none !important; }
+  .batch { position: relative; border-radius: var(--radius); background: var(--card); border: 1px solid var(--border); }
+  .batch.next { border-color: color-mix(in oklab, var(--green) 50%, var(--border)); box-shadow: 0 4px 20px color-mix(in oklab, var(--green) 16%, transparent); }
+  .batch-head { padding: 12px 18px 0; font-size: 12px; font-weight: 600; color: var(--muted); }
+  .batch.next .batch-head { color: var(--green); }
+  .card { position: relative; display: flex; align-items: center; gap: 14px; padding: 14px 16px; border-radius: var(--radius); background: var(--card); border: 1px solid var(--border); }
+  .card.next { padding: 20px; border-color: color-mix(in oklab, var(--green) 50%, var(--border)); box-shadow: 0 4px 20px color-mix(in oklab, var(--green) 16%, transparent); }
+  .card.resting { opacity: .6; }
+  .icon { width: 42px; height: 42px; flex: none; border-radius: 12px; display: grid; place-items: center; font-size: 20px; background: color-mix(in oklab, var(--fg) 6%, transparent); }
+  .card.next .icon { width: 50px; height: 50px; font-size: 24px; }
+  .body { flex: 1; min-width: 0; }
+  .title { font-weight: 600; }
+  .card.next .title { font-size: 17px; }
+  .line { font-size: 13px; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .card.next .line { white-space: normal; }
+  .line.nudge { color: var(--amber); }
+  .actions { display: flex; gap: 4px; align-items: center; }
+
+  a.btn, button { font: inherit; font-size: 13px; cursor: pointer; text-decoration: none; display: inline-flex; gap: 6px; align-items: center; border-radius: 999px; transition: transform .06s, background .12s; }
+  a.btn:active, button:active, .pressed { transform: scale(.94); }
+  .open { padding: 7px 13px; border: 1px solid var(--border); color: var(--muted); background: transparent; }
+  .open:hover { background: color-mix(in oklab, var(--fg) 6%, transparent); }
+  .card.next .open { background: var(--green); color: white; border-color: transparent; font-weight: 600; padding: 9px 16px; }
+  .card.next .open:hover { filter: brightness(1.07); }
+  /* Per-card shortcut keys: always in the layout (no reflow), visible on hover. */
+  .keys { display: flex; gap: 3px; opacity: 0; transition: opacity .1s; }
+  .card:hover .keys, .keys:focus-within { opacity: 1; }
+  @media (hover: none) { .keys { opacity: 1; } }
+  .keys button { font-family: ui-monospace, monospace; font-size: 11px; height: 22px; justify-content: center; gap: 3px; padding: 0 5px; border-radius: 5px; border: 1px solid var(--border); background: transparent; color: var(--muted); }
+  .keys button:hover { color: var(--fg); background: color-mix(in oklab, var(--fg) 6%, transparent); }
+  kbd { font-family: ui-monospace, monospace; font-size: 10px; padding: 0 4px; border-radius: 4px; border: 1px solid currentColor; opacity: .6; }
+
+  /* Focus mode: the heading sits in the middle of the free space. */
+  .wrap.focus .hello { flex: 1; display: flex; flex-direction: column; justify-content: center; padding: 0; }
+  .wrap.focus #queue { flex: none; }
+  /* Secondary actions live behind a quiet ⋯ pill. */
+  .more { position: relative; display: flex; justify-content: center; margin-top: 18px; }
+  .more-pill { padding: 0 12px; height: 22px; border-radius: 999px; border: 1px solid color-mix(in oklab, var(--border) 70%, transparent); background: transparent; color: color-mix(in oklab, var(--muted) 60%, transparent); font-size: 14px; letter-spacing: 1px; line-height: 1; }
+  .menu { position: absolute; bottom: calc(100% + 8px); display: flex; flex-direction: column; min-width: 260px; padding: 4px; border-radius: 12px; border: 1px solid var(--border); background: var(--card); box-shadow: 0 6px 24px rgb(0 0 0 / .14); z-index: 2; }
+  .menu button { justify-content: space-between; padding: 8px 10px; border: none; border-radius: 8px; background: transparent; color: var(--muted); font-size: 13px; text-align: left; }
+  .menu button:hover { background: color-mix(in oklab, var(--fg) 5%, transparent); color: var(--fg); }
+  .empty { text-align: center; color: var(--muted); padding: 30px 0; }
+
+  dialog { border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); color: var(--fg); padding: 22px; width: min(420px, calc(100vw - 32px)); }
+  dialog::backdrop { background: rgb(0 0 0 / .35); }
+  dialog h2 { margin: 0 0 14px; font-size: 18px; }
+  form { display: flex; flex-direction: column; gap: 12px; }
+  label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; color: var(--muted); }
+  label small { font-weight: 400; }
+  input { font: inherit; font-size: 15px; padding: 9px 11px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg); color: var(--fg); }
+  input:focus { outline: 2px solid color-mix(in oklab, var(--green) 50%, transparent); border-color: transparent; }
+  .row2 { display: grid; grid-template-columns: 64px 1fr; gap: 10px; }
+  .row2b { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .dlg-actions { display: flex; gap: 8px; justify-content: space-between; margin-top: 6px; }
+  .primary { padding: 9px 18px; border: none; background: var(--green); color: white; font-weight: 600; }
+  .secondary { padding: 9px 14px; border: 1px solid var(--border); background: transparent; color: var(--fg); }
+  .danger { padding: 9px 12px; border: none; background: transparent; color: #d0503c; }
+  .quick { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .quick button { justify-content: space-between; padding: 10px 14px; border-radius: 12px; }
+  .quick button:hover, .secondary:hover { background: color-mix(in oklab, var(--fg) 6%, transparent); }
+  .at { display: flex; gap: 8px; align-items: end; }
+  .at label { flex: 1; }
+  #hdlg { width: min(520px, calc(100vw - 32px)); max-height: 80vh; }
+  .day { margin-top: 16px; }
+  .day-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-size: 13px; font-weight: 600; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+  .day-head span { font-weight: 400; font-size: 12px; color: var(--muted); text-align: right; }
+  .session { padding: 6px 0; border-bottom: 1px solid color-mix(in oklab, var(--border) 60%, transparent); }
+  .entry { display: grid; grid-template-columns: 48px 1fr auto; gap: 10px; align-items: baseline; font-size: 14px; padding: 2px 0; }
+  .entry time { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 13px; }
+  .entry .what { font-size: 12px; color: var(--muted); }
+  .entry .what.kind-peek { color: var(--amber); }
+  .gap { font-size: 11px; color: var(--muted); padding: 4px 0 4px 58px; }
+  .danger:hover { background: color-mix(in oklab, #d0503c 12%, transparent); }
+  .batch .card { border: none; background: transparent; box-shadow: none; border-radius: 0; opacity: 1; }
+  .batch .card + .card { border-top: 1px solid var(--border); }
+  .batch.resting { opacity: .6; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hello"><div class="big" id="big"></div><div class="sub" id="sub"></div></div>
+  <div id="queue"></div>
+  <div class="more">
+    <div class="menu" id="menu" hidden>
+      <button id="addBtn">Add something to check <kbd>N</kbd></button>
+      <button id="historyBtn">History <kbd>H</kbd></button>
+      <button id="laterToggle"></button>
+      <button id="notifyBtn"></button>
+    </div>
+    <button class="more-pill" id="moreBtn" aria-expanded="false" title="More (M)">⋯</button>
+  </div>
+</div>
+
+<dialog id="dlg">
+  <h2 id="dlgTitle">Add</h2>
+  <form id="form" method="dialog">
+    <div class="row2">
+      <label>Icon<input name="icon" maxlength="4" required></label>
+      <label>Name<input name="name" required placeholder="e.g. Slack"></label>
+    </div>
+    <label>Link<small>Any URL, including app links like slack:// or x-callback-url schemes</small><input name="url" type="text" required autocomplete="off" spellcheck="false" placeholder="https://app.slack.com/client"></label>
+    <label>Reminder<input name="note" placeholder="e.g. Catch up on DMs and mentions"></label>
+    <div class="row2b">
+      <label>Rest for (min)<small>Not worth checking before this</small><input name="rest" type="number" min="1" required></label>
+      <label>Budget (min)<small>Longest people should wait</small><input name="budget" type="number" min="1" required></label>
+    </div>
+    <div class="dlg-actions">
+      <button type="button" class="danger" id="delBtn">Delete</button>
+      <span style="display:flex;gap:8px;margin-left:auto">
+        <button type="button" class="secondary" id="cancelBtn">Cancel</button>
+        <button type="submit" class="primary">Save <kbd>↵</kbd></button>
+      </span>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="hdlg">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+    <h2 style="margin:0">History</h2>
+    <button type="button" class="secondary" id="hcloseBtn">Close <kbd>Esc</kbd></button>
+  </div>
+  <div id="history"></div>
+  <div class="dlg-actions"><button type="button" class="danger" id="hclearBtn">Clear history</button></div>
+</dialog>
+
+<dialog id="sdlg">
+  <h2 id="sdlgTitle" tabindex="-1" style="outline:none">Schedule</h2>
+  <form id="sform" method="dialog">
+    <div class="quick" id="quick">
+      <button type="button" class="secondary" data-in="15">In 15 min <kbd>1</kbd></button>
+      <button type="button" class="secondary" data-in="30">In 30 min <kbd>2</kbd></button>
+      <button type="button" class="secondary" data-in="60">In 1 hour <kbd>3</kbd></button>
+      <button type="button" class="secondary" data-in="120">In 2 hours <kbd>4</kbd></button>
+    </div>
+    <div class="at">
+      <label>Or at a time<input name="at" type="time" required></label>
+      <button type="submit" class="primary">Set <kbd>↵</kbd></button>
+    </div>
+    <div class="dlg-actions">
+      <button type="button" class="danger" id="unschedBtn">Clear schedule <kbd>C</kbd></button>
+      <button type="button" class="secondary" id="scancelBtn" style="margin-left:auto">Cancel <kbd>Esc</kbd></button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+const KEY = 'ready-queue/v1';
+const MIN = 60_000;
+const defaults = () => [
+  { id: crypto.randomUUID(), icon: '👀', name: 'Code reviews', note: 'Teammates may be waiting on you', url: 'https://github.com/pulls/review-requested', rest: 45, budget: 120, last: Date.now() },
+  { id: crypto.randomUUID(), icon: '💬', name: 'Slack', note: 'Catch up on DMs and mentions', url: 'https://app.slack.com/client', rest: 60, budget: 150, last: Date.now() },
+  { id: crypto.randomUUID(), icon: '📋', name: 'Linear', note: 'Triage and reply to comments', url: 'https://linear.app/inbox', rest: 120, budget: 240, last: Date.now() },
+];
+function load() {
+  try { const v = JSON.parse(localStorage.getItem(KEY)); if (Array.isArray(v)) return v; } catch {}
+  return defaults();
+}
+function save() { try { localStorage.setItem(KEY, JSON.stringify(items)); } catch {} }
+let items = load();
+save();
+
+const fmtTime = t => new Date(t).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }); // 24-hour, e.g. 14:05
+const sameDay = (a, b) => new Date(a).toDateString() === new Date(b).toDateString();
+// Friendly relative time: "in a few minutes", "in 25 min", "in about an hour", "tomorrow at 09:00".
+function rel(t) {
+  const m = (t - Date.now()) / MIN;
+  if (m < 1) return 'any moment now';
+  if (m < 5) return 'in a few minutes';
+  if (m < 50) return `in ${Math.round(m / 5) * 5} min`;
+  if (m < 80) return 'in about an hour';
+  if (m < 6 * 60) return `in about ${Math.round(m / 60)} hours`;
+  if (sameDay(t, Date.now())) return `later today at ${fmtTime(t)}`;
+  if (sameDay(t, Date.now() + 86_400_000)) return `tomorrow at ${fmtTime(t)}`;
+  return `${new Date(t).toLocaleDateString('en-GB', { weekday: 'long' })} at ${fmtTime(t)}`;
+}
+const since = it => Date.now() - it.last;
+// A manual schedule overrides the rest timer until the next check.
+const readyAt = it => it.nextAt ?? it.last + it.rest * MIN;
+const urgency = it => since(it) / (it.budget * MIN);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+// Batching: items that become available within BATCH_MIN of each other are grouped and become available together,
+// at the earliest member's time, so you take one context switch instead of several.
+// A manual schedule inside a group is respected: the group waits for it.
+const BATCH_MIN = 15;
+function batches() {
+  const now = Date.now();
+  const avail = it => Math.max(readyAt(it), now); // everything already available counts as "now"
+  const sorted = [...items].sort((a, b) => avail(a) - avail(b));
+  const out = [];
+  for (let i = 0; i < sorted.length;) {
+    const start = avail(sorted[i]);
+    const members = [];
+    while (i < sorted.length && avail(sorted[i]) <= start + BATCH_MIN * MIN) members.push(sorted[i++]);
+    const manual = members.filter(m => m.nextAt).map(m => m.nextAt);
+    const at = manual.length ? Math.max(start, Math.min(...manual)) : start;
+    members.sort((a, b) => urgency(b) - urgency(a)); // most overdue first within a batch
+    out.push({ at, items: members, ready: at <= now });
+  }
+  return out;
+}
+const names = list => list.length === 1 ? list[0].name : `${list.slice(0, -1).map(i => i.name).join(', ')} and ${list.at(-1).name}`;
+
+// History: one entry per check. kind is 'open' (opened when available), 'peek' (opened early) or 'mark' (marked as checked).
+const LOG_KEY = KEY + '/log';
+const LOG_MAX = 2000;
+function loadLog() { try { const v = JSON.parse(localStorage.getItem(LOG_KEY)); if (Array.isArray(v)) return v; } catch {} return []; }
+function logCheck(it, kind) {
+  const log = loadLog();
+  log.push({ id: it.id, name: it.name, icon: it.icon, kind, at: Date.now(), waited: Date.now() - it.last, budget: it.budget });
+  try { localStorage.setItem(LOG_KEY, JSON.stringify(log.slice(-LOG_MAX))); } catch {}
+}
+
+function markChecked(id, kind) {
+  const it = items.find(i => i.id === id);
+  if (!it) return;
+  logCheck(it, kind);
+  it.last = Date.now();
+  delete it.nextAt;
+  save(); render();
+}
+
+// Small line icons (Lucide-style) for the per-card keys.
+const svgIcon = d => `<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
+const ICONS = {
+  check: svgIcon('<path d="M20 6 9 17l-5-5"/>'),
+  edit: svgIcon('<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>'),
+  clock: svgIcon('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'),
+};
+
+// mode: 'next' (in the ready batch), 'later' (single resting card) or 'grouped' (row in a resting batch).
+function card(it, idx, mode, at) {
+  const key = idx < 9 ? `<kbd>${idx + 1}</kbd>` : '';
+  let line;
+  if (mode === 'next') line = urgency(it) > 0.8 ? `<div class="line nudge">Been a while. Worth a look soon</div>` : `<div class="line">${esc(it.note || 'Available now')}</div>`;
+  else if (mode === 'grouped') line = `<div class="line">${esc(it.note || '')}</div>`;
+  else line = `<div class="line">Available ${rel(at)}${it.nextAt ? ' (scheduled)' : ''}</div>`;
+  const cls = ['card', mode === 'next' ? 'next' : '', mode === 'later' ? 'resting' : ''].join(' ');
+  return `<div class="${cls}" data-card="${it.id}">
+    <div class="icon">${esc(it.icon || '•')}</div>
+    <div class="body"><div class="title">${esc(it.name)}</div>${line}</div>
+    <div class="keys">
+      <button data-check="${it.id}" title="Mark as checked (e.g. you checked in the desktop app)">${ICONS.check}C</button>
+      <button data-edit="${it.id}" title="Edit">${ICONS.edit}E</button>
+      <button data-schedule="${it.id}" title="Schedule next check">${ICONS.clock}S</button>
+    </div>
+    <div class="actions">
+      <a class="btn open" href="${esc(it.url)}" ${/^https?:/i.test(it.url) ? 'target="_blank" rel="noopener"' : ''} data-open="${it.id}" title="${mode === 'next' ? '' : 'Opening early resets the timer'}">${mode === 'next' ? 'Open ↗' : 'Peek ↗'} ${key}</a>
+    </div>
+  </div>`;
+}
+
+function batchHtml(b, idx) {
+  const mode = b.ready ? 'next' : (b.items.length > 1 ? 'grouped' : 'later');
+  const rows = b.items.map((it, i) => card(it, idx + i, mode, b.at)).join('');
+  if (b.items.length === 1) return rows;
+  const head = b.ready ? `${b.items.length} together, in one go` : `${b.items.length} together · available ${rel(b.at)}`;
+  return `<div class="batch ${b.ready ? 'next' : 'resting'}"><div class="batch-head">${head}</div>${rows}</div>`;
+}
+
+// Favicon: a stack of three cards. Grey while you focus, green with the top card raised when something is ready.
+function icon(ready) {
+  const bg = ready ? '#2f9e6a' : '#8a847b';
+  const top = ready ? '<rect x="14" y="10" width="36" height="12" rx="4" fill="#fff"/>' : '<rect x="14" y="14" width="36" height="9" rx="3.5" fill="#fff" opacity=".9"/>';
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="16" fill="${bg}"/>${top}<rect x="14" y="28" width="36" height="9" rx="3.5" fill="#fff" opacity=".7"/><rect x="14" y="42" width="36" height="9" rx="3.5" fill="#fff" opacity=".45"/></svg>`;
+  return 'data:image/svg+xml,' + encodeURIComponent(svg);
+}
+let lastIcon = null;
+function setIcon(ready) {
+  const href = icon(ready);
+  if (href !== lastIcon) { document.getElementById('favicon').href = href; lastIcon = href; }
+}
+
+// Collapsible "Later" section. When collapsed, the heading only mentions a budget that is about to run out.
+const COLLAPSE_KEY = KEY + '/later-collapsed';
+const laterCollapsed = () => localStorage.getItem(COLLAPSE_KEY) !== '0'; // collapsed unless you opened it
+function toggleLater() {
+  try { localStorage.setItem(COLLAPSE_KEY, laterCollapsed() ? '0' : '1'); } catch {}
+  render();
+}
+const BUDGET_WARN_MIN = 10;
+function laterHead(later) {
+  if (!laterCollapsed()) return `<div class="section">Later</div>`;
+  // Collapsed: show nothing, unless a budget is about to run out.
+  const all = later.flatMap(b => b.items);
+  const tight = all.map(it => ({ it, end: it.last + it.budget * MIN })).sort((a, b) => a.end - b.end)[0];
+  const left = (tight.end - Date.now()) / MIN;
+  if (left > BUDGET_WARN_MIN) return '';
+  return `<div class="later-warn">${left <= 0 ? `${esc(tight.it.name)} has waited longer than planned` : `${esc(tight.it.name)} reaches its limit ${left < 5 ? 'in a few minutes' : `in ${Math.round(left)} min`}`}</div>`;
+}
+
+let lastNextKey = null;
+function render() {
+  const bs = batches();
+  const next = bs[0]?.ready ? bs[0] : null;
+  const el = document.getElementById('queue');
+  if (!bs.length) {
+    el.innerHTML = `<div class="empty">Nothing to keep an eye on yet.</div>`;
+  } else {
+    // Only the ready batch gets the "Next up" slot; everything else is "Later".
+    const later = next ? bs.slice(1) : bs;
+    let idx = next ? next.items.length : 0;
+    const laterHtml = later.map(b => { const h = batchHtml(b, idx); idx += b.items.length; return h; }).join('');
+    el.innerHTML =
+      (next ? `<div class="section">Next up</div>` + batchHtml(next, 0) : '') +
+      (later.length ? `<div class="later">${laterHead(later)}${laterCollapsed() ? '' : laterHtml}</div>` : '');
+  }
+  const big = document.getElementById('big'), sub = document.getElementById('sub');
+  document.querySelector('.wrap').classList.toggle('focus', !next);
+  document.getElementById('laterToggle').innerHTML = `${laterCollapsed() ? 'Show' : 'Hide'} later items <kbd>L</kbd>`;
+  if (!bs.length) { big.textContent = 'Hi there 👋'; sub.textContent = 'Press N to add the places you tend to check.'; document.title = 'Ready queue'; }
+  else if (next) {
+    big.textContent = `Time for ${names(next.items)}`;
+    sub.textContent = next.items.length > 1 ? 'Do them together, then get back to it.' : 'No rush. Wrap up your current thought first.';
+    document.title = `● ${names(next.items)} · Ready queue`;
+  } else {
+    big.textContent = "You're in focus mode ✨";
+    sub.textContent = '';
+    document.title = 'Focus · Ready queue';
+  }
+  // Notify once when a new batch becomes "next up".
+  const nextKey = next ? next.items.map(i => i.id).sort().join() : null;
+  if (next && nextKey !== lastNextKey && lastNextKey !== undefined && notifyOn()) {
+    try { new Notification(`Time for ${names(next.items)}`, { body: next.items.length > 1 ? 'Check them together.' : (next.items[0].note || 'Available now'), tag: 'ready-queue' }); } catch {}
+  }
+  lastNextKey = nextKey;
+  setIcon(!!next);
+  renderNotifyBtn();
+}
+
+// Notifications
+const notifyOn = () => 'Notification' in window && Notification.permission === 'granted' && localStorage.getItem(KEY + '/notify') !== 'off';
+function renderNotifyBtn() {
+  const b = document.getElementById('notifyBtn');
+  if (!('Notification' in window)) { b.hidden = true; return; }
+  b.textContent = notifyOn() ? 'Notifications on' : 'Notify me when something is next';
+}
+document.getElementById('notifyBtn').onclick = async () => {
+  if (notifyOn()) { localStorage.setItem(KEY + '/notify', 'off'); }
+  else { localStorage.removeItem(KEY + '/notify'); if (Notification.permission !== 'granted') await Notification.requestPermission(); }
+  renderNotifyBtn();
+};
+
+// ⋯ menu
+const menu = document.getElementById('menu'), moreBtn = document.getElementById('moreBtn');
+function setMenu(open) { menu.hidden = !open; moreBtn.setAttribute('aria-expanded', open); }
+moreBtn.onclick = () => setMenu(menu.hidden);
+document.getElementById('laterToggle').onclick = toggleLater;
+menu.addEventListener('click', e => { if (e.target.closest('button')) setMenu(false); });
+document.addEventListener('click', e => { if (!e.target.closest('.more')) setMenu(false); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') setMenu(false); });
+
+// Dialog
+const dlg = document.getElementById('dlg'), form = document.getElementById('form');
+let editingId = null;
+function openDialog(id) {
+  editingId = id;
+  const it = items.find(i => i.id === id) || { icon: '✨', name: '', url: '', note: '', rest: 60, budget: 180 };
+  document.getElementById('dlgTitle').textContent = id ? `Edit ${it.name}` : 'Add something to check';
+  document.getElementById('delBtn').hidden = !id;
+  for (const k of ['icon', 'name', 'url', 'note', 'rest', 'budget']) form.elements[k].value = it[k] ?? '';
+  dlg.showModal();
+  form.elements[id ? 'url' : 'name'].focus();
+}
+form.addEventListener('submit', e => {
+  e.preventDefault();
+  const f = Object.fromEntries(new FormData(form));
+  const data = { icon: f.icon.trim(), name: f.name.trim(), url: f.url.trim(), note: f.note.trim(), rest: Math.max(1, +f.rest), budget: Math.max(+f.rest, +f.budget) };
+  if (editingId) Object.assign(items.find(i => i.id === editingId), data);
+  else items.push({ id: crypto.randomUUID(), last: Date.now(), ...data });
+  save(); dlg.close(); render();
+});
+document.getElementById('cancelBtn').onclick = () => dlg.close();
+document.getElementById('delBtn').onclick = () => {
+  const it = items.find(i => i.id === editingId);
+  if (it && confirm(`Remove ${it.name}?`)) { items = items.filter(i => i.id !== editingId); save(); dlg.close(); render(); }
+};
+document.getElementById('addBtn').onclick = () => openDialog(null);
+
+// Schedule dialog
+const sdlg = document.getElementById('sdlg'), sform = document.getElementById('sform');
+let schedulingId = null;
+function openSchedule(id) {
+  const it = items.find(i => i.id === id);
+  if (!it) return;
+  schedulingId = id;
+  document.getElementById('sdlgTitle').textContent = `When should you check ${it.name}?`;
+  document.getElementById('unschedBtn').hidden = !it.nextAt;
+  const d = new Date(readyAt(it));
+  sform.elements.at.value = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  sdlg.showModal();
+  document.getElementById('sdlgTitle').focus(); // keep focus out of the time field so 1–4 work
+}
+function schedule(ts) {
+  const it = items.find(i => i.id === schedulingId);
+  if (it) { if (ts === null) delete it.nextAt; else it.nextAt = ts; save(); }
+  sdlg.close(); render();
+}
+document.getElementById('quick').addEventListener('click', e => {
+  const b = e.target.closest('[data-in]');
+  if (b) schedule(Date.now() + +b.dataset.in * MIN);
+});
+sform.addEventListener('submit', e => {
+  e.preventDefault();
+  const [h, m] = sform.elements.at.value.split(':').map(Number);
+  const d = new Date(); d.setHours(h, m, 0, 0);
+  if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1); // a time that has passed means tomorrow
+  schedule(d.getTime());
+});
+document.getElementById('unschedBtn').onclick = () => schedule(null);
+document.getElementById('scancelBtn').onclick = () => sdlg.close();
+sdlg.addEventListener('keydown', e => {
+  if (e.target.matches('input')) return; // typing a time
+  if (/^[1-4]$/.test(e.key)) { e.preventDefault(); press(document.querySelector(`#quick [data-in]:nth-child(${e.key})`)); }
+  else if (e.key.toLowerCase() === 'c' && !document.getElementById('unschedBtn').hidden) { e.preventDefault(); press(document.getElementById('unschedBtn')); }
+});
+
+// History view: entries grouped by day, then into sessions (checks within SESSION_MIN of each other
+// count as one context switch). Gaps between sessions are your focus blocks.
+const SESSION_MIN = 5;
+const durShort = ms => { const m = Math.round(ms / MIN); return m < 1 ? 'under a minute' : m < 60 ? `${m} min` : `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`; };
+function dayLabel(t) {
+  if (sameDay(t, Date.now())) return 'Today';
+  if (sameDay(t, Date.now() - 86_400_000)) return 'Yesterday';
+  return new Date(t).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
+}
+function renderHistory() {
+  const log = loadLog();
+  const el = document.getElementById('history');
+  if (!log.length) { el.innerHTML = `<div class="empty">Nothing yet. Each time you open, peek or check something, it shows up here.</div>`; return; }
+  const days = [];
+  for (const e of [...log].reverse()) { // newest first
+    const label = dayLabel(e.at);
+    if (days.at(-1)?.label !== label) days.push({ label, entries: [] });
+    days.at(-1).entries.push(e);
+  }
+  el.innerHTML = days.map(day => {
+    const sessions = [];
+    for (const e of day.entries) {
+      const cur = sessions.at(-1);
+      if (cur && cur.at(-1).at - e.at <= SESSION_MIN * MIN) cur.push(e); else sessions.push([e]);
+    }
+    const gaps = sessions.slice(0, -1).map((s, i) => s.at(-1).at - sessions[i + 1][0].at);
+    const longest = gaps.length ? `, longest focus ${durShort(Math.max(...gaps))}` : '';
+    const peeks = day.entries.filter(e => e.kind === 'peek').length;
+    const summary = `${sessions.length} ${sessions.length === 1 ? 'switch' : 'switches'}${longest}${peeks ? `, ${peeks} early ${peeks === 1 ? 'peek' : 'peeks'}` : ''}`;
+    const body = sessions.map((s, i) => {
+      const rows = s.map(e => {
+        const after = e.waited > 8 * 60 * MIN ? 'first of the day' : `after ${durShort(e.waited)}`; // overnight gaps aren't interesting
+        const what = e.kind === 'peek' ? `Peeked early, ${after}` : e.kind === 'mark' ? `Marked as checked, ${after}` : `Opened, ${after}`;
+        return `<div class="entry"><time>${fmtTime(e.at)}</time><span>${esc(e.icon || '•')} ${esc(e.name)}</span><span class="what kind-${e.kind}">${what}</span></div>`;
+      }).join('');
+      const gap = i < gaps.length ? `<div class="gap">${durShort(gaps[i])} of focus</div>` : '';
+      return `<div class="session">${rows}</div>${gap}`;
+    }).join('');
+    return `<div class="day"><div class="day-head">${day.label}<span>${summary}</span></div>${body}</div>`;
+  }).join('');
+}
+const hdlg = document.getElementById('hdlg');
+document.getElementById('historyBtn').onclick = () => { renderHistory(); hdlg.showModal(); };
+document.getElementById('hcloseBtn').onclick = () => hdlg.close();
+document.getElementById('hclearBtn').onclick = () => {
+  if (confirm('Clear all history?')) { localStorage.removeItem(LOG_KEY); renderHistory(); }
+};
+
+// Card actions
+document.getElementById('queue').addEventListener('click', e => {
+  const t = e.target.closest('[data-open],[data-check],[data-edit],[data-schedule]');
+  if (!t) return;
+  if (t.dataset.open) { // link opens in a new tab as normal
+    const nextBatch = batches()[0];
+    const available = nextBatch?.ready && nextBatch.items.some(i => i.id === t.dataset.open);
+    markChecked(t.dataset.open, available ? 'open' : 'peek');
+  }
+  if (t.dataset.check) markChecked(t.dataset.check, 'mark');
+  if (t.dataset.edit) openDialog(t.dataset.edit);
+  if (t.dataset.schedule) openSchedule(t.dataset.schedule);
+});
+
+// Track the hovered card for S / E. Stored as an id so it survives re-renders.
+let hoveredId = null;
+document.getElementById('queue').addEventListener('mouseover', e => { hoveredId = e.target.closest('[data-card]')?.dataset.card ?? null; });
+document.getElementById('queue').addEventListener('mouseleave', () => { hoveredId = null; });
+
+// Hotkeys: 1–9 open the nth card, M opens the ⋯ menu, N adds, H shows history, L folds Later, C / E / S check / edit / schedule the hovered card. Hotkeys press the button so you see it react.
+const hoverKeys = { c: 'check', e: 'edit', s: 'schedule' };
+function press(el) { el.classList.add('pressed'); setTimeout(() => el.classList.remove('pressed'), 120); el.click(); }
+document.addEventListener('keydown', e => {
+  if (dlg.open || sdlg.open || hdlg.open || e.metaKey || e.ctrlKey || e.altKey || e.target.matches('input')) return;
+  if (/^[1-9]$/.test(e.key)) {
+    const btn = document.querySelectorAll('[data-open]')[+e.key - 1];
+    if (btn) { e.preventDefault(); press(btn); }
+  } else if (e.key.toLowerCase() === 'm') { e.preventDefault(); press(moreBtn); }
+  else if (e.key.toLowerCase() === 'n') { e.preventDefault(); press(document.getElementById('addBtn')); }
+  else if (e.key.toLowerCase() === 'h') { e.preventDefault(); press(document.getElementById('historyBtn')); }
+  else if (e.key.toLowerCase() === 'l') { e.preventDefault(); press(document.getElementById('laterToggle')); }
+  else if (hoveredId && hoverKeys[e.key.toLowerCase()]) {
+    const btn = document.querySelector(`[data-${hoverKeys[e.key.toLowerCase()]}="${hoveredId}"]`);
+    if (btn) { e.preventDefault(); press(btn); }
+  }
+});
+
+// Keep in sync across tabs and tick the clock.
+window.addEventListener('storage', e => { if (e.key === KEY) { items = load(); render(); } });
+lastNextKey = undefined; // don't notify for whatever is ready on page load
+render();
+setInterval(render, 15_000);
+document.addEventListener('visibilitychange', render);
+</script>
+</body>
+</html>
